@@ -1,0 +1,227 @@
+/* Analysis of the protocol presented in */
+/* 'A robust grouping proof protocol for RFID EPC C1G2 tags' */
+/* By Sundaresan, Doss, Piramuthu and Zhou*/
+/* In 2014 IEEE Transactions on Information Forensics and Security */
+
+theory robustgrouping
+
+begin
+
+functions: xor/2, h/1, f/2
+
+
+// -------------------- Tag Initialization -------------------- //
+
+rule Register_Tag:
+    [ Fr(~keyt), Fr(~lastn)]
+  --[  Once($T), ReaderAdd($T, h(~keyt)),
+       KeySource($T)
+        ]->
+    [ ReaderInfo($T, ~keyt, h(~keyt)),
+      TagInfo( $T, ~keyt, ~lastn)  ]
+
+// -------------------- Protocol Rules -------------------- //
+
+rule R_1: // Reader initiates the protocol
+  let 
+    D = xor(~data, ~nr)
+    I = xor($R, h(xor(~TS, ~nr)))
+    deltaA = xor(~nr, h(xor(key, $R)))
+    deltaB = xor(~nr, h(xor(h(key), $R)))
+    msg = < ~TS, D, I, deltaA, deltaB >
+  in
+    [ Fr( ~nr ), Fr(~TS), Fr(~data), ReaderInfo($T, key, h(key)) ]
+  --[ ReaderStart($T, ~data), Twice_Reader() ]->
+    [ Out( msg ), RSessStart($T, ~nr, ~data), ReaderInfo($T, key, h(key)) ]
+    
+rule T_1_match_A: // Tag matches to deltaA
+  let 
+    D = xor(data, nr)
+    I = xor($R, h(xor(TS, nr)))
+    deltaA = xor(nr, h(xor(key, $R)))
+    inmsg = < TS, D, I, deltaA, deltaB >
+  in
+    [ In( inmsg ), TagInfo( $T, key, lastn)]
+  --[ Neq(lastn, nr),
+      TagAdd($T, h(key)), TagDrop($T, key),
+      Twice_Tag()]->
+    [ TagInfo($T, h(key), nr ),
+       Out( f(data, nr)) ]
+
+rule T_2_match_B: // Tag matches to deltaB
+  let 
+    D = xor(data, nr)
+    I = xor($R, h(xor(TS, nr)))
+    deltaB = xor(nr, h(xor(key, $R)))
+    inmsg = < TS, D, I, deltaA, deltaB >
+  in
+    [ In( inmsg ), TagInfo( $T, key, lastn)]
+  --[ Neq(lastn, nr), TagB($T),
+      Twice_Tag() ]->
+    [ TagInfo($T, key, nr ),
+       Out( f(data, nr)) ]
+
+rule T_1_match_A_xor: // Tag matches to modified deltaA
+  let 
+    D = xor(xor(data, nr), na)
+    I = xor($R, h(xor(TS, nr)))
+    deltaA = xor(xor(nr, h(xor(key, $R))), na)
+    inmsg = < xor(TS, na), D, I, deltaA, deltaB >
+  in
+    [ In( inmsg ), TagInfo( $T, key, lastn)]
+  --[ Neq(lastn, xor(nr, na)),
+      TagAdd($T, h(key)), TagDrop($T, key),
+      Twice_Tag()]->
+    [ TagInfo($T, h(key), xor(nr, na) ),
+       Out( f(data, xor(nr, na)) ) ]
+
+
+rule R_2: // Reader receives message from tag
+  [ In( f(data, nr) ), RSessStart($T, nr, data), ReaderInfo($T, key, h(key)) ]
+  --[ Complete($T, data),
+      ReaderAdd($T, h(h(key))), ReaderDrop($T, key),Twice_Reader() ]->
+  [ ReaderInfo($T, h(key), h(h(key))) ]
+
+rule R_2_cancel:
+  [ RSessStart($T, nr, data), ReaderInfo($T, key, h(key)) ]
+  --[ ReaderCancel(data), Twice_Reader() ]->
+  [ ReaderInfo($T, key, h(key)) ]
+
+// ------------------ Axioms -------------------------- //
+
+axiom not_equals:
+  "
+    All first second #t. 
+        Neq(first, second)@t ==>
+    not(   
+        first = second
+    )
+  "
+
+axiom at_most_once:
+    "
+    All T #t1 #t2. Once(T)@t1 & Once(T)@t2 ==>
+        (
+        #t1 = #t2
+        )
+    
+    
+    "
+
+
+axiom twice_tag:
+    "
+    All #t1 #t2 #t3. Twice_Tag()@t1 & Twice_Tag()@t2 & Twice_Tag()@t3 ==>
+      (#t1 = #t2) | (#t1 = #t3) | (#t2 = #t3)
+    "
+
+
+axiom twice_reader:
+    "
+    All #t1 #t2 #t3. Twice_Reader()@t1 & Twice_Reader()@t2 & Twice_Reader()@t3 ==>
+      (#t1 = #t2) | (#t1 = #t3) | (#t2 = #t3)
+    "
+
+/*
+axiom once_reader:
+    "
+    All #t1 #t2. Twice_Reader()@t1 & Twice_Reader()@t2 ==>
+      (#t1 = #t2)
+    "
+*/
+
+
+// -------------------- Intermediate Lemmas ---------------- //
+
+lemma tag_key_source[use_induction]:
+"
+All tag key #t1. TagAdd(tag, key)@t1 ==>
+(
+Ex #t2. KeySource(tag)@t2 
+)
+"
+
+lemma reader_key_source[use_induction]:
+"
+All tag key #t1. ReaderAdd(tag, key)@t1 ==>
+(
+Ex #t2. KeySource(tag)@t2
+) |
+(
+  KeySource(tag)@t1
+)
+"
+
+lemma complete_exists[use_induction]:
+exists-trace
+  "
+    Ex t data #t1. Complete(t, data)@t1
+  "
+
+
+// -------------------- Security Lemmas -------------------- //
+
+lemma tagkeyprepared:
+  "
+  All T key #t2. (
+    TagAdd(T, key)@t2 ) ==>
+    (
+      Ex #t1. (ReaderAdd(T, key)@t1) & (t1 < t2)
+    )
+
+  "
+
+lemma readerkeyprepared:
+  "
+  All T key #t2. (
+    ReaderAdd(T, key)@t2 ) ==>
+    (
+      Ex #t1. (TagAdd(T, key)@t1) & (t1 < t2)
+    )
+
+  "
+
+lemma tagkeydiscard:
+  "
+  All T key #t2. (
+    TagDrop(T, key)@t2 ) ==>
+    (
+      Ex #t1. (ReaderDrop(T, key)@t1) & (t1 < t2)
+    )
+
+  "
+
+lemma readerkeydiscard:
+  "
+  All T key #t2. (
+    ReaderDrop(T, key)@t2 ) ==>
+    (
+      Ex #t1. (TagDrop(T, key)@t1) & (t1 < t2)
+    )
+
+  "
+
+lemma tagkeyuniqueness:
+  "
+  All T key #t1. TagAdd(T, key)@t1 ==>
+  (
+    not Ex T2 #t2. (TagAdd(T2, key)@t2)&(not #t1 = #t2)
+  ) &
+  (
+    not Ex T3 #t3. (ReaderAdd(T3, key)@t3 & (not T3 = T))
+  )
+
+  "
+
+lemma readerkeyuniqueness:
+  "
+  All T key #t1. ReaderAdd(T, key)@t1 ==>
+  (
+    not Ex T2 #t2. (ReaderAdd(T2, key)@t2)&(not #t1 = #t2)
+  ) &
+  (
+    not Ex T3 #t3. (TagAdd(T3, key)@t3 & (not T3 = T))
+  )
+
+  "
+end

@@ -1,0 +1,199 @@
+/* Analysis of the protocol presented in */
+/* 'Two Rounds RFID Grouping-proof Protocol' */
+/* By Abughazalah, Markantonakis and Mayes  */
+/* In 2016 IEEE International Conference on RFID */
+
+theory rfid2016
+
+begin
+
+functions: f1/5, f2/5, g/3, h/1, xor/2
+
+// This protocol uses two classes of updating keys
+// "T" keys are unique to each tag, whilst "G" keys correspond to a group
+// For our purposes, we're only really interested in the "T" keys,
+// As the protocol allows for "G" keys to be arbitrarily reset or changed
+// based on the messages send by the reader. 
+
+
+// -------------------- Tag Initialization -------------------- //
+
+// Standard tag registry
+rule Register_Tag:
+    [ Fr(~keyt), Fr(~keyg), Fr(~lastt), Fr(~lastn), Fr(~idg) ]
+  --[  Once($T),
+       ReaderAddT($T, h(~keyt)), ReaderAddT($T, ~keyt),
+       ReaderAddG(~idg, ~keyg),
+       TagAddG($T, ~idg, ~keyg), TagAddT($T, ~keyt),
+       KeySource($T), GKeySource(~idg),
+       TagSource($T)
+    ]->
+    [
+      ReaderGroupKey(~idg, ~keyg),
+      ReaderKey($T, ~keyt, h(~keyt)),
+      TagData($T, ~keyt, ~idg, ~keyg, ~lastn, ~lastt)
+    ]
+
+// -------------------- Protocol Rules -------------------- //
+
+rule R_1: // Reader initiates the protocol
+  let msg = < g( idg, ~nr, keyg) , xor(keyg, h(xor(idg, ~nr))), ~nr, ~times >
+  in
+    [ Fr( ~nr ), Fr( ~times ),
+      ReaderGroupKey( idg, keyg )
+    ]
+  --[ ReaderOne( ~nr, ~times),
+      UseGroupKey(idg, keyg),
+      ReaderLoop(idg)
+    ]->
+    [ Out( msg ),
+      ReaderGroupKey( idg, keyg ),
+      ReaderSession(idg, ~nr, ~times)
+    ]
+
+// Tag fails to match the group key
+// This case is the only relevant one, since it can be done arbitrarily
+// It can execute even when the key is already matching
+
+rule T_1_nomatch: 
+  let inmsg = < g( idg, nr, keyg) , xor(keyg, h(xor(idg, nr))), nr, times >
+      outmsg = < ~nt, f1($T, ~nt, nr, keyt, times), f2(idg, ~nt, nr, keyg, $T) >
+  in
+    [ In( inmsg ), Fr( ~nt ),
+      TagData( $T, keyt, idg, wrongkeyg, lastn, lastt)
+    ]
+  --[ TagNoMatch($T),
+      Neq(lastn, nr), Neq(lastt, times),
+      TagAddT($T, h(keyt)), TagDropT($T, keyt),
+      TagAddG($T, idg, h(keyg)), TagDropG($T, idg, keyg),
+      TagLoop($T)
+    ]->
+    [ TagData( $T, h(keyt), idg, h(keyg), nr, times),
+       Out( outmsg) ]
+
+
+rule R_2_old: // Reader authenticates using the old version of the tag key
+  let inmsg = < nt, f1($T, nt, nr, keyt, times), f2(idg, nt, nr, keyg, $T) >
+  in
+  [ 
+    In( inmsg ),
+    ReaderKey($T, keyt, h(keyt)),
+    ReaderGroupKey( idg, keyg ),
+    ReaderSession(idg, nr, times)
+  ]
+  --[ CompleteO($T, nr, nt, times, keyg, keyt, idg),
+      ReaderAddT($T, h(h(keyt))), ReaderDropT($T, keyt),
+      ReaderAddG(idg, h(keyg)), ReaderDropG(idg, keyg),
+      ReaderFinal(idg)
+    ]->
+  [ 
+    ReaderKey($T, h(keyt), h(h(keyt)) ),
+    ReaderGroupKey( idg, h(keyg) )
+  ]
+
+rule R_2_new: // Reader authenticates using the new version of the tag key
+  let inmsg = < nt, f1($T, nt, nr, keyt, times), f2(idg, nt, nr, keyg, $T) >
+  in
+  [ 
+    In( inmsg ),
+    ReaderKey($T, oldkeyt, keyt ),
+    ReaderGroupKey( idg, keyg ),
+    ReaderSession(idg, nr, times)
+  ]
+  --[ CompleteN($T, nr, nt, times, keyg, keyt, idg),
+      ReaderAddT($T, h(keyt)), ReaderDropT($T, keyt),
+      ReaderAddG(idg, h(keyg)), ReaderDropG(idg, keyg),
+      ReaderFinal(idg)
+    ]->
+  [ 
+    ReaderKey($T, keyt, h(keyt) ),
+    ReaderGroupKey( idg, h(keyg) )
+  ]
+
+
+// ------------------- Axioms -------------------------- //
+
+axiom not_equals:
+  "
+    All first second #t. 
+        Neq(first, second)@t ==>
+    not(   
+        first = second
+    )
+  "
+
+axiom at_most_once:
+    "
+    All tag #t1 #t2. Once(tag)@t1 & Once(tag)@t2 ==>
+        (
+        #t1 = #t2
+        )
+    
+    
+    "
+
+// -------------------- Intermediate Lemmas ---------------- //
+
+// There are more induction lemmas that can be provided,
+// as there are multiple sources of 'semi-persistent' facts.
+// These are sufficient to prove that the security property doesn't hold
+
+lemma tag_source[use_induction, reuse]:
+"
+All tag #t1. TagLoop(tag)@t1 ==> Ex #t2. TagSource(tag)@t2
+
+"
+
+lemma reader_inner[use_induction, reuse]:
+"
+All group #t1. ReaderLoop(group)@t1 ==> Ex #t2. GKeySource(group)@t2
+"
+
+lemma reader_final[use_induction, reuse]:
+"
+All group #t1. ReaderFinal(group)@t1 ==> Ex #t2. GKeySource(group)@t2
+"
+
+// -------------------- Check Lemmas -------------------- //
+
+lemma keysource_exists:
+    exists-trace
+  "
+    Ex tag #t. (
+        KeySource( tag )@t )
+
+  "
+
+lemma readerone_exists:
+    exists-trace
+  "
+    Ex nonce time #t. (
+        ReaderOne( nonce, time )@t )
+
+  "
+
+lemma tagnomatch_exists:
+    exists-trace
+  "
+    Ex tag #t. (
+        TagNoMatch( tag )@t )
+
+  "
+
+
+// -------------------- Security Lemmas -------------------- //
+
+// Violation of this property is sufficient to show a desynchronisation attack exists
+// In fact, this property can be violated repeatedly in a single trace
+
+lemma tagkeyprepared[use_induction]:
+  "
+  All T key #t2. (
+    TagAddT(T, key)@t2 ) ==>
+    (
+      Ex #t1. (ReaderAddT(T, key)@t1) & ((t1 < t2)|(#t1=#t2))
+    )
+
+  "
+
+end
